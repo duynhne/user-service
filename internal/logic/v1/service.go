@@ -25,7 +25,7 @@ func NewUserService() *UserService {
 
 // GetUser retrieves a user by ID
 func (s *UserService) GetUser(ctx context.Context, id string) (*domain.User, error) {
-	ctx, span := middleware.StartSpan(ctx, "user.get", trace.WithAttributes(
+	_, span := middleware.StartSpan(ctx, "user.get", trace.WithAttributes(
 		attribute.String("layer", "logic"),
 		attribute.String("user.id", id),
 	))
@@ -58,9 +58,9 @@ func (s *UserService) GetProfile(ctx context.Context, userID string, username, e
 	defer span.End()
 
 	// Get database connection pool (pgx)
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	// Parse user_id for database query
@@ -134,9 +134,9 @@ func (s *UserService) CreateUser(ctx context.Context, req domain.CreateUserReque
 	defer span.End()
 
 	// Get database connection pool (pgx)
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	// Validate email format (basic validation)
@@ -207,9 +207,9 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, req doma
 	))
 	defer span.End()
 
-	db := database.GetDB()
+	db := database.GetPool()
 	if db == nil {
-		return nil, fmt.Errorf("database connection not available")
+		return nil, errors.New("database connection not available")
 	}
 
 	// Parse user ID
