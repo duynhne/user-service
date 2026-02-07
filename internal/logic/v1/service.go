@@ -2,25 +2,26 @@ package v1
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	database "github.com/duynhne/user-service/internal/core"
 	"github.com/duynhne/user-service/internal/core/domain"
 	"github.com/duynhne/user-service/middleware"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
-// UserService defines the business logic interface for user management
-type UserService struct{}
+// UserService defines the business logic for user management
+type UserService struct {
+	repo domain.UserRepository
+}
 
-// NewUserService creates a new user service
-func NewUserService() *UserService {
-	return &UserService{}
+// NewUserService creates a new user service with injected repository
+func NewUserService(repo domain.UserRepository) *UserService {
+	return &UserService{
+		repo: repo,
+	}
 }
 
 // GetUser retrieves a user by ID
@@ -31,17 +32,12 @@ func (s *UserService) GetUser(ctx context.Context, id string) (*domain.User, err
 	))
 	defer span.End()
 
-	// Mock logic: simulate user not found for id "999"
-	if id == "999" {
+	user, err := s.repo.GetUser(ctx, id)
+	if err != nil {
 		span.SetAttributes(attribute.Bool("user.found", false))
-		return nil, fmt.Errorf("get user by id %q: %w", id, ErrUserNotFound)
-	}
-
-	user := &domain.User{
-		ID:       id,
-		Username: "user" + id,
-		Email:    "user" + id + "@example.com",
-		Name:     "User " + id,
+		// If it's a "not found" error, we might want to wrap it differently
+		// For now, adhering to original logic which mock-failed on "999"
+		return nil, fmt.Errorf("get user by id %q: %w", id, err)
 	}
 
 	span.SetAttributes(attribute.Bool("user.found", true))
@@ -57,47 +53,38 @@ func (s *UserService) GetProfile(ctx context.Context, userID string, username, e
 	))
 	defer span.End()
 
-	// Get database connection pool (pgx)
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
-	// Parse user_id for database query
+	// Parse user_id
 	uid, err := strconv.Atoi(userID)
 	if err != nil {
 		span.SetAttributes(attribute.Bool("profile.found", false))
-		return nil, fmt.Errorf("invalid user_id %q: %w", userID, ErrUserNotFound)
+		return nil, fmt.Errorf("invalid user_id %q: %w", userID, domain.ErrUserNotFound)
 	}
 
-	// Query user profile - use pointers for nullable columns
-	var profileID int
-	var firstName, lastName, phone, address *string
-
-	query := `SELECT id, user_id, first_name, last_name, phone, address FROM user_profiles WHERE user_id = $1`
-	err = db.QueryRow(ctx, query, uid).Scan(&profileID, &uid, &firstName, &lastName, &phone, &address)
+	// Fetch profile from repository
+	profile, err := s.repo.GetProfileByUserID(ctx, uid)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			span.SetAttributes(attribute.Bool("profile.found", false))
-			// Return auth data even if no profile in user_profiles (e.g., new user)
-			return &domain.User{
-				ID:       userID,
-				Username: username,
-				Email:    email,
-				Name:     "User " + userID,
-			}, nil
-		}
 		span.RecordError(err)
 		return nil, fmt.Errorf("query user profile: %w", err)
 	}
 
+	// If no profile found, return auth data (legacy/fallback behavior)
+	if profile == nil {
+		span.SetAttributes(attribute.Bool("profile.found", false))
+		return &domain.User{
+			ID:       userID,
+			Username: username,
+			Email:    email,
+			Name:     "User " + userID,
+		}, nil
+	}
+
 	// Build name from profile
 	nameParts := []string{}
-	if firstName != nil && *firstName != "" {
-		nameParts = append(nameParts, *firstName)
+	if profile.FirstName != nil && *profile.FirstName != "" {
+		nameParts = append(nameParts, *profile.FirstName)
 	}
-	if lastName != nil && *lastName != "" {
-		nameParts = append(nameParts, *lastName)
+	if profile.LastName != nil && *profile.LastName != "" {
+		nameParts = append(nameParts, *profile.LastName)
 	}
 	name := strings.Join(nameParts, " ")
 	if name == "" {
@@ -106,8 +93,8 @@ func (s *UserService) GetProfile(ctx context.Context, userID string, username, e
 
 	// Build phone string
 	phoneStr := ""
-	if phone != nil && *phone != "" {
-		phoneStr = *phone
+	if profile.Phone != nil && *profile.Phone != "" {
+		phoneStr = *profile.Phone
 	}
 
 	user := &domain.User{
@@ -123,8 +110,6 @@ func (s *UserService) GetProfile(ctx context.Context, userID string, username, e
 }
 
 // CreateUser creates a new user profile
-// Note: This assumes user_id already exists in auth.users (created via auth service)
-// In production, user_id should be passed in request or extracted from auth context
 func (s *UserService) CreateUser(ctx context.Context, req domain.CreateUserRequest) (*domain.User, error) {
 	ctx, span := middleware.StartSpan(ctx, "user.create", trace.WithAttributes(
 		attribute.String("layer", "logic"),
@@ -133,19 +118,27 @@ func (s *UserService) CreateUser(ctx context.Context, req domain.CreateUserReque
 	))
 	defer span.End()
 
-	// Get database connection pool (pgx)
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
-	// Validate email format (basic validation)
+	// Validate email format
 	if !strings.Contains(req.Email, "@") {
 		span.SetAttributes(attribute.Bool("user.created", false))
-		return nil, fmt.Errorf("validate email %q for user %q: %w", req.Email, req.Username, ErrInvalidEmail)
+		return nil, fmt.Errorf("validate email %q for user %q: %w", req.Email, req.Username, domain.ErrInvalidEmail)
 	}
 
-	// Parse name into first_name and last_name (simple split)
+	// Mock production user_id logic (same as before)
+	userID := len(req.Username) + 100
+
+	// Check if profile exists
+	exists, err := s.repo.CheckProfileExists(ctx, userID)
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("check existing profile: %w", err)
+	}
+	if exists {
+		span.SetAttributes(attribute.Bool("user.created", false))
+		return nil, fmt.Errorf("create user %q: %w", req.Username, domain.ErrUserExists)
+	}
+
+	// Parse name
 	nameParts := strings.Fields(req.Name)
 	var firstName, lastName string
 	if len(nameParts) > 0 {
@@ -155,29 +148,8 @@ func (s *UserService) CreateUser(ctx context.Context, req domain.CreateUserReque
 		lastName = strings.Join(nameParts[1:], " ")
 	}
 
-	// TODO: In production, user_id should come from auth service or be passed in request
-	// For now, generate a mock user_id (in production, this should be the authenticated user's ID)
-	// Check if profile already exists for this user_id
-	// For demo purposes, use a hash of username as user_id
-	userID := len(req.Username) + 100 // Simple mock user_id
-
-	var existingID int
-	checkQuery := `SELECT id FROM user_profiles WHERE user_id = $1`
-	err := db.QueryRow(ctx, checkQuery, userID).Scan(&existingID)
-	if err == nil {
-		// Profile already exists
-		span.SetAttributes(attribute.Bool("user.created", false))
-		return nil, fmt.Errorf("create user %q: %w", req.Username, ErrUserExists)
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		// Database error
-		span.RecordError(err)
-		return nil, fmt.Errorf("check existing profile: %w", err)
-	}
-
-	// Insert new user profile
-	insertQuery := `INSERT INTO user_profiles (user_id, first_name, last_name) VALUES ($1, $2, $3) RETURNING id`
-	var profileID int
-	err = db.QueryRow(ctx, insertQuery, userID, firstName, lastName).Scan(&profileID)
+	// Create profile
+	_, err = s.repo.CreateUserProfile(ctx, userID, firstName, lastName)
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("insert user profile: %w", err)
@@ -207,11 +179,6 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, req doma
 	))
 	defer span.End()
 
-	db := database.GetPool()
-	if db == nil {
-		return nil, errors.New("database connection not available")
-	}
-
 	// Parse user ID
 	uid := 1
 	if userID != "" {
@@ -220,7 +187,7 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, req doma
 		}
 	}
 
-	// Parse name into first_name and last_name
+	// Parse name
 	nameParts := strings.Fields(req.Name)
 	var firstName, lastName string
 	if len(nameParts) > 0 {
@@ -230,22 +197,11 @@ func (s *UserService) UpdateProfile(ctx context.Context, userID string, req doma
 		lastName = strings.Join(nameParts[1:], " ")
 	}
 
-	// Update profile
-	updateQuery := `UPDATE user_profiles SET first_name = $1, last_name = $2, phone = $3 WHERE user_id = $4`
-	result, err := db.Exec(ctx, updateQuery, firstName, lastName, req.Phone, uid)
+	// Upsert profile
+	err := s.repo.UpsertUserProfile(ctx, uid, firstName, lastName, req.Phone)
 	if err != nil {
 		span.RecordError(err)
-		return nil, fmt.Errorf("update profile: %w", err)
-	}
-
-	if result.RowsAffected() == 0 {
-		// Profile doesn't exist, create one
-		insertQuery := `INSERT INTO user_profiles (user_id, first_name, last_name, phone) VALUES ($1, $2, $3, $4)`
-		_, err = db.Exec(ctx, insertQuery, uid, firstName, lastName, req.Phone)
-		if err != nil {
-			span.RecordError(err)
-			return nil, fmt.Errorf("create profile: %w", err)
-		}
+		return nil, fmt.Errorf("upsert profile: %w", err)
 	}
 
 	user := &domain.User{

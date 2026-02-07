@@ -15,7 +15,9 @@ import (
 
 	"github.com/duynhne/user-service/config"
 	database "github.com/duynhne/user-service/internal/core"
-	v1 "github.com/duynhne/user-service/internal/web/v1"
+	"github.com/duynhne/user-service/internal/core/repository/psql"
+	logicv1 "github.com/duynhne/user-service/internal/logic/v1"
+	webv1 "github.com/duynhne/user-service/internal/web/v1"
 	"github.com/duynhne/user-service/middleware"
 )
 
@@ -50,11 +52,16 @@ func main() {
 	defer pool.Close()
 	logger.Info("Database connection pool established")
 
+	// Initialize Dependency Injection
+	userRepo := psql.NewUserRepository()
+	userService := logicv1.NewUserService(userRepo)
+	userHandler := webv1.NewUserHandler(userService)
+
 	authClient := middleware.NewAuthClient(cfg.AuthServiceURL)
 	logger.Info("Auth client initialized", zap.String("auth_service_url", cfg.AuthServiceURL))
 
 	var isShuttingDown atomic.Bool
-	srv := setupServer(cfg, logger, authClient, &isShuttingDown)
+	srv := setupServer(cfg, logger, authClient, &isShuttingDown, userHandler)
 	runGracefulShutdown(cfg, srv, tp, pool, logger, &isShuttingDown)
 }
 
@@ -87,7 +94,7 @@ func initProfiling(cfg *config.Config, logger *zap.Logger) {
 	logger.Info("Profiling initialized", zap.String("endpoint", cfg.Profiling.Endpoint))
 }
 
-func setupServer(cfg *config.Config, logger *zap.Logger, authClient *middleware.AuthClient, isShuttingDown *atomic.Bool) *http.Server {
+func setupServer(cfg *config.Config, logger *zap.Logger, authClient *middleware.AuthClient, isShuttingDown *atomic.Bool, userHandler *webv1.UserHandler) *http.Server {
 	r := gin.Default()
 
 	r.Use(middleware.TracingMiddleware())
@@ -108,14 +115,14 @@ func setupServer(cfg *config.Config, logger *zap.Logger, authClient *middleware.
 
 	apiV1 := r.Group("/api/v1")
 	{
-		apiV1.GET("/users/:id", v1.GetUser)
+		apiV1.GET("/users/:id", userHandler.GetUser)
 		profileGroup := apiV1.Group("/users")
 		profileGroup.Use(middleware.AuthMiddleware(authClient, logger, cfg.AuthAllowUnauthenticatedFallback))
 		{
-			profileGroup.GET("/profile", v1.GetProfile)
-			profileGroup.PUT("/profile", v1.UpdateProfile)
+			profileGroup.GET("/profile", userHandler.GetProfile)
+			profileGroup.PUT("/profile", userHandler.UpdateProfile)
 		}
-		apiV1.POST("/users", v1.CreateUser)
+		apiV1.POST("/users", userHandler.CreateUser)
 	}
 
 	return &http.Server{

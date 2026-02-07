@@ -13,10 +13,20 @@ import (
 	"go.uber.org/zap"
 )
 
-var userService = logicv1.NewUserService()
+// UserHandler handles HTTP requests for user operations
+type UserHandler struct {
+	service *logicv1.UserService
+}
+
+// NewUserHandler creates a new user handler
+func NewUserHandler(service *logicv1.UserService) *UserHandler {
+	return &UserHandler{
+		service: service,
+	}
+}
 
 // GetUser handles HTTP request to get a user by ID
-func GetUser(c *gin.Context) {
+func (h *UserHandler) GetUser(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("method", c.Request.Method),
@@ -38,13 +48,13 @@ func GetUser(c *gin.Context) {
 	id := c.Param("id")
 	span.SetAttributes(attribute.String("user.id", id))
 
-	user, err := userService.GetUser(ctx, id)
+	user, err := h.service.GetUser(ctx, id)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to get user", zap.Error(err))
 
 		switch {
-		case errors.Is(err, logicv1.ErrUserNotFound):
+		case errors.Is(err, domain.ErrUserNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -57,7 +67,7 @@ func GetUser(c *gin.Context) {
 }
 
 // GetProfile handles HTTP request to get current user profile
-func GetProfile(c *gin.Context) {
+func (h *UserHandler) GetProfile(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("method", c.Request.Method),
@@ -86,13 +96,13 @@ func GetProfile(c *gin.Context) {
 	username := c.GetString("username")
 	email := c.GetString("email")
 
-	user, err := userService.GetProfile(ctx, userID, username, email)
+	user, err := h.service.GetProfile(ctx, userID, username, email)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to get profile", zap.Error(err))
 
 		switch {
-		case errors.Is(err, logicv1.ErrUnauthorized):
+		case errors.Is(err, domain.ErrUnauthorized):
 			c.JSON(http.StatusForbidden, gin.H{"error": "Unauthorized access"})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -105,7 +115,7 @@ func GetProfile(c *gin.Context) {
 }
 
 // CreateUser handles HTTP request to create a new user
-func CreateUser(c *gin.Context) {
+func (h *UserHandler) CreateUser(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("method", c.Request.Method),
@@ -135,15 +145,15 @@ func CreateUser(c *gin.Context) {
 
 	span.SetAttributes(attribute.Bool("request.valid", true))
 
-	user, err := userService.CreateUser(ctx, req)
+	user, err := h.service.CreateUser(ctx, req)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to create user", zap.Error(err))
 
 		switch {
-		case errors.Is(err, logicv1.ErrUserExists):
+		case errors.Is(err, domain.ErrUserExists):
 			c.JSON(http.StatusConflict, gin.H{"error": "User already exists"})
-		case errors.Is(err, logicv1.ErrInvalidEmail):
+		case errors.Is(err, domain.ErrInvalidEmail):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email address"})
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -156,7 +166,7 @@ func CreateUser(c *gin.Context) {
 }
 
 // UpdateProfile handles PUT /api/v1/users/profile
-func UpdateProfile(c *gin.Context) {
+func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	ctx, span := middleware.StartSpan(c.Request.Context(), "http.request", trace.WithAttributes(
 		attribute.String("layer", "web"),
 		attribute.String("method", c.Request.Method),
@@ -194,7 +204,7 @@ func UpdateProfile(c *gin.Context) {
 
 	span.SetAttributes(attribute.Bool("request.valid", true))
 
-	user, err := userService.UpdateProfile(ctx, userID, req)
+	user, err := h.service.UpdateProfile(ctx, userID, req)
 	if err != nil {
 		span.RecordError(err)
 		zapLogger.Error("Failed to update profile", zap.Error(err))

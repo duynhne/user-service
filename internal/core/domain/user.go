@@ -8,6 +8,15 @@ type User struct {
 	Phone    string `json:"phone,omitempty"`
 }
 
+type UserProfile struct {
+	ID        int
+	UserID    int
+	FirstName *string
+	LastName  *string
+	Phone     *string
+	Address   *string
+}
+
 type CreateUserRequest struct {
 	Username string `json:"username" binding:"required"`
 	Email    string `json:"email" binding:"required,email"`
